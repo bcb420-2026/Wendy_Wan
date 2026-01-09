@@ -1,0 +1,30 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+# Create a 5 by 10 matrix of random integers
+mx <- matrix(sample(1:1000, 50, replace = TRUE), nrow = 5, ncol = 10)
+
+# Define column names
+colnames(mx) <- c("cond1", "cond2", "cond3", "cond4", "cond5", 
+                           "ctrl1", "ctrl2", "ctrl3", "ctrl4", "ctrl5")
+# Define row names
+rownames(mx) <- paste0("gene", 1:5)
+
+# Compute the fold change for each gene. (mean of cond) / (mean of ctrl)
+cond_means <- rowMeans(mx[, 1:5])
+ctrl_means <- rowMeans(mx[, 6:10])
+
+fold_change <- cond_means / ctrl_means
+
+# Display results
+results <- data.frame(
+  Gene = rownames(mx),
+  Fold_Change = fold_change
+)
+
+print(results)
+```
