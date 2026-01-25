@@ -1,0 +1,201 @@
+---
+title: "GEO exploration"
+output: html_document
+---
+##Setup
+### Install packages
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+if (!requireNamespace("GEOmetadb", quietly = TRUE))
+  BiocManager::install("GEOmetadb")
+if (!requireNamespace("DBI", quietly = TRUE))
+  install.packages("DBI")
+if (!requireNamespace("RSQLite", quietly = TRUE))
+  install.packages("RSQLite")
+if (!requireNamespace("dplyr", quietly = TRUE))
+  install.packages("dplyr")
+if (!requireNamespace("ggplot2", quietly = TRUE))
+  install.packages("ggplot2")
+```
+
+### Get SQLite Database
+```{r}
+library(GEOmetadb)
+if (!file.exists('GEOmetadb.sqlite')) getSQLiteFile()
+file.info('GEOmetadb.sqlite')
+```
+
+### Connect to Database
+```{r}
+library(DBI)
+library(RSQLite)
+con <- dbConnect(SQLite(), 'GEOmetadb.sqlite')
+```
+
+### Explore tables and fields
+```{r}
+dbListTables(con)
+dbListFields(con, 'gse')
+```
+
+## Exploring Platforms (GPL)
+
+```{r}
+num_platforms <- dbGetQuery(con, 'select count(*) as n from gpl')
+num_platforms # n = 25880
+
+uniq_tech <- dbGetQuery(con, 'select distinct technology from gpl')
+uniq_tech
+NROW(uniq_tech) # 18 unique technologies
+
+# plot of different technologies
+num_uniq_tech <- dbGetQuery(con, 'select technology, count(*) as Num_Platforms from gpl group by technology')
+library(ggplot2)
+plot_df <- subset(num_uniq_tech, !is.na(technology))
+ ggplot(plot_df, aes(x = technology, y = Num_Platforms)) +
+   geom_col() + coord_flip()
+```
+### Restrict to Human
+
+```{r}
+library(dplyr)
+
+# Look only at rows where the organism is Human; Categorize those human rows by their technology type; Tally how many platforms exist for each technology; Order the list so the most popular technologies appear at the top
+num_uniq_tech_human <- dbGetQuery(con, "select technology, count(*) as Num_Platforms from gpl where organism = 'Homo sapiens' group by technology order by Num_Platforms desc")
+
+# Similar to above sql statement but organism is not strictly
+num_uniq_tech_contain_human <- dbGetQuery(con, "select technology, count(*) as Num_Platforms from gpl where organism like '%Homo sapiens%' group by technology order by Num_Platforms desc")
+
+uniq_tech_all <- bind_rows(
+  transform(num_uniq_tech_human, type = 'human only'),
+  transform(num_uniq_tech_contain_human, type = 'contains human'),
+  transform(num_uniq_tech, type = 'All species')
+)
+
+#Plot 
+ggplot(uniq_tech_all, aes(technology, Num_Platforms, fill = type)) +
+  geom_col(position = 'dodge') + coord_flip() +
+  theme(legend.position = 'bottom') +
+  ggtitle('Platforms that contain human vs human only')
+```
+## Finding Datasets of Interest
+
+```{r}
+# Get RNA-seq series by platform technology
+sql <- paste(
+  "SELECT DISTINCT gse.title, gse.gse, gpl.title", # get the experiment name, id and platform
+  "FROM gse JOIN gse_gpl ON gse_gpl.gse = gse.gse", # connect gse and bridge table by id
+  "JOIN gpl ON gse_gpl.gpl = gpl.gpl", # connect bridge table to platform table
+  "WHERE gpl.technology = 'high-throughput sequencing'" # filter
+)
+rs <- dbGetQuery(con,sql)
+dim(rs) # 61489 rows, 3 columns
+```
+
+```{r}
+# organism and recency filters
+sql <- paste(
+  "SELECT DISTINCT gse.title, gse.gse, gpl.title, gse.submission_date", # get the submission date too 
+  "FROM gse JOIN gse_gpl ON gse_gpl.gse = gse.gse",
+  "JOIN gpl ON gse_gpl.gpl = gpl.gpl",
+  "WHERE gse.submission_date > '2022-01-01' AND", # must satisfy 3 filters: 1. include more recent studies
+  "gpl.organism LIKE '%Homo sapiens%' AND", # 2. species including homo sapiens
+  "gpl.technology LIKE '%high-throughput seq%'" # 3. seq tech
+)
+rs <- dbGetQuery(con, sql)
+dim(rs) # 3202 rows, 4 columns (Title, ID, Platform Title, Date)
+
+```
+
+```{r}
+# add topic keyword
+sql <- paste(
+  "SELECT DISTINCT gse.title, gse.gse, gpl.title, gse.submission_date", # get the submission date too 
+  "FROM gse JOIN gse_gpl ON gse_gpl.gse = gse.gse",
+  "JOIN gpl ON gse_gpl.gpl = gpl.gpl",
+  "WHERE gse.submission_date > '2022-01-01' AND", # must satisfy 3 filters: 1. include more recent studies
+  "gse.title LIKE '%ovarian%' AND",
+  "gpl.organism LIKE '%Homo sapiens%' AND", # 2. species including homo sapiens
+  "gpl.technology LIKE '%high-throughput seq%'" # 3. seq tech
+)
+rs <- dbGetQuery(con, sql)
+dim(rs) # 27 rows, 4 columns
+head(rs[, c('gse','title')])
+
+```
+
+```{r}
+# requiring a counts-like supplementary file
+
+sql <- paste(
+  "SELECT DISTINCT gse.title, gse.gse, gpl.title, gse.submission_date, gse.supplementary_file",
+  "FROM gse JOIN gse_gpl ON gse_gpl.gse = gse.gse",
+  "JOIN gpl ON gse_gpl.gpl = gpl.gpl",
+  "WHERE gse.submission_date > '2022-01-01' AND",
+  "gse.title LIKE '%ovarian%' AND",
+  "gpl.technology LIKE '%high-throughput sequencing%' AND",
+  "gpl.organism LIKE '%Homo sapiens%'",
+  "ORDER BY gse.submission_date DESC"
+)
+rs <- dbGetQuery(con, sql)
+counts_files <- rs$supplementary_file[grep("count|cnt", rs$supplementary_file, ignore.case = TRUE)]
+series_of_interest <- rs$gse[grep("count|cnt", rs$supplementary_file, ignore.case = TRUE)]
+
+shortened <- unlist(lapply(counts_files, function(x){
+  x <- unlist(strsplit(x, ";"))
+  x <- x[grep("count|cnt|txt|csv|xlsx", x, ignore.case = TRUE)]
+  tail(unlist(strsplit(x, "/")), n = 1)
+}))
+
+head(shortened, 10)
+
+```
+
+```{r}
+# requiring a minimum number of samples per series
+num_series <- dbGetQuery(con, paste(
+  "select * from gsm where series_id in ('",
+  paste(series_of_interest, collapse = "','"), "')", sep = ""
+))
+
+gse.count <- as.data.frame(table(num_series$series_id))
+subset(gse.count, Freq > 6)
+```
+
+## Chapter 6 Exercises: Inspect Specific GEO Series
+
+```{r}
+sql <- "SELECT * FROM gse WHERE gse.gse = 'GSE201427'"
+rs <- dbGetQuery(con, sql)
+rs$type
+rs$title
+rs$summary
+```
+
+```{r}
+sql <- "SELECT * FROM gse WHERE gse.gse = 'GSE166530'"
+rs <- dbGetQuery(con, sql)
+rs$type
+rs$title
+rs$summary
+```
+
+```{r}
+sql <- "SELECT * FROM gse WHERE gse.gse = 'GSE162183'"
+rs <- dbGetQuery(con, sql)
+```
+
+```{r}
+sql <- "SELECT * FROM gse WHERE gse.gse = 'GSE186458'"
+rs <- dbGetQuery(con, sql)
+```
+
+```{r}
+sql <- "SELECT * FROM gse WHERE gse.gse = 'GSE264108'"
+rs <- dbGetQuery(con, sql)
+```
+
+```{r}
+dbGetQuery(con, "SELECT gse, title, submission_date FROM gse ORDER BY submission_date DESC LIMIT 1")
+```
