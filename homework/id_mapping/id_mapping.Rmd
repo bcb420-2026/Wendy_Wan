@@ -1,0 +1,127 @@
+---
+title: "id_mapping"
+output: html_document
+---
+
+# BiomaRt step-by-step
+```{r, echo=FALSE}
+setwd("~/projects/Wendy_Wan/in_class_exercises/id_mapping")
+
+# download GEO supplementary files
+library(GEOquery)
+source("./fetch_geo_supp.R")
+
+fetch_geo_supp(gse = "GSE233947")
+fetch_geo_supp(gse = "GSE119732")
+
+```
+
+```{r}
+# workflow: choose a mart → choose a dataset → discover filters/attributes → query with getBM() → merge back into your matrix
+
+library(biomaRt)
+
+# list marts
+listMarts()
+
+ensembl <- useMart("ensembl")
+
+```
+
+## List datasets and select human
+```{r}
+
+datasets <- listDatasets(ensembl)
+
+human <- datasets[grep(datasets$dataset, pattern = "hsapiens"), ]
+
+human
+
+ensembl <- useDataset("hsapiens_gene_ensembl", mart = ensembl)
+```
+
+## Identify correct filter
+```{r}
+
+all_filters <- listFilters(ensembl)
+dim(all_filters)
+all_filters
+
+all_filters[grep(all_filters$name, pattern = "ensembl_gene"), ]
+#For Ensembl gene IDs, use filter: ensembl_gene_id
+
+```
+
+## Identify correct attributes
+```{r}
+
+all_attr <- listAttributes(ensembl)
+all_attr
+all_attr[1:10,]
+
+# search for HGNC -> gives list of attributes whos name includes parameter 2
+searchAttributes(ensembl, "hgnc")
+
+# common attributes are ensembl_gene_id and hgnc_symbol
+
+```
+
+## Strip version suffixes if needed
+```{r}
+
+strip_ensembl_ver <- function(x) sub("\\..*$", "", x)
+
+ids <- c("ENSG00000141510.17", "ENSG00000157764.2")
+
+ids_clean <- strip_ensembl_ver(ids)
+ids_clean
+
+```
+
+## use getBM() to run query
+```{r}
+
+map <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values = ids_clean,
+  mart = ensembl
+)
+map
+
+```
+
+## Cache mapping! 
+```{r}
+
+cache_file <- "id_conversion.rds"
+
+if (file.exists(cache_file)) {
+  map <- readRDS(cache_file)
+} else {
+  map <- getBM(
+    attributes = c("ensembl_gene_id", "hgnc_symbol"),
+    filters = "ensembl_gene_id",
+    values = ids_clean,
+    mart = ensembl
+  )
+  saveRDS(map, cache_file)
+}
+
+```
+
+## Merge back into data
+```{r}
+library(dplyr)
+
+df <- tibble(ensembl_gene_id = ids_clean, value = c(1, 2))
+df_annot <- left_join(df, map, by = "ensembl_gene_id")
+df_annot
+```
+
+## List datasets and select human
+```{r}
+
+dataset <- listDatasets(ensembl)
+
+```
