@@ -1,11 +1,10 @@
-# Visualizing distributions
+---
+title: "normalisation"
+output: html_document
+---
 
-Before choosing a normalization method, inspect data distributions.
-
-## load Some data
-
-
-```{r get_data}
+```{r, echo=FALSE}
+# setup
 library(GEOquery)
 library(knitr)
 library(dplyr)
@@ -16,20 +15,19 @@ if(!require(tidyverse)){
 library(tidyverse)
 
 gse <- "GSE119732"
-
-source("./supp_functions.R")
+source("../../in_class_exercises/normalization/supp_functions.R")
 fetch_geo_supp(gse = gse)
 
 path <- file.path("data", gse)
 files <- list.files(path, pattern = "\\.txt.gz$|\\.tsv.gz$|\\.csv.gz$", 
                     full.names = TRUE, recursive = TRUE)
 
-
 ```
 
-Raw table preview
+## Preview the raw table
 
-```{r preview_raw}
+```{r}
+
 library(readr)
 
 safe_read <- function(file) {
@@ -63,10 +61,10 @@ kable_head(x[, 1:min(6, ncol(x))], 5, paste(gse,": raw table preview"))
 
 ```
 
-
 ## Boxplots
 
 ```{r}
+
 library(tidyverse)
 
 # suppose 'mat' is a gene x sample matrix (numeric)
@@ -85,12 +83,13 @@ plot_box <- function(mat, main = "", ylab = "log2(counts+1)") {
 }
 
 plot_box(x[,2:ncol(x)])
+
 ```
 
-
-## Density plots
+## Density Plots
 
 ```{r}
+
 plot_density <- function(mat, main = "") {
   df <- as.data.frame(mat)
   df_long <- df |>
@@ -106,6 +105,17 @@ plot_density <- function(mat, main = "") {
 }
 
 plot_density(x[,2:ncol(x)])
+
 ```
 
+# Normalisation
 
+## Distribution based normalisation
+```{r}
+library(edgeR)
+
+dge <- DGEList(counts = counts)
+dge <- calcNormFactors(dge, method = "TMM")
+logcpm <- cpm(dge, log = TRUE, prior.count = 1)
+
+```
