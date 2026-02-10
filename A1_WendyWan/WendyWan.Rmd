@@ -1,0 +1,448 @@
+---
+title: "BCB420: Assignment 1"
+subtitle: "Data Cleaning, Processing, and Differential Expression of SARS-CoV-2 Infected NHBE Cells"
+author: "Wendy Wan"
+date: "02/10/2025"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    fig_caption: true
+    code_folding: hide
+bibliography: references.bib
+link-citations: true
+---
+
+# Introduction {#introduction}
+
+The emergence of SARS-CoV-2, the causative agent of COVID-19, triggered a global pandemic that dirupted our daily lives in 2020, permanently altering societal structures worldwide. Scientific research, specifically the study by Blanco-Melo et al. (2020), indicates that COVID-19 is driven by an "imbalanced" host response. When the virus infects human lung cells, it appears to limit the body’s primary antiviral defenses, such as the production of interferons. Instead of a typical defense, the body launches an overactive inflammatory response marked by high levels of various cytokines and chemokines.
+
+This report focuses specifically on the **NHBE (Normal Human Bronchial Epithelial)** cell line from the **GSE147507**[@BlancoMelo2020] dataset. While the original study examined several cell types (such as A549 and Calu-3), I am focusing on NHBE because these are primary cells that more closely mimic the natural physiology of the human airway compared to immortalized cancer lines.
+
+To characterize these early transcriptional signatures, I am analyzing a subset of the data containing **six samples** in total, divided into the following two conditions: - **Test Condition**: Three biological replicates of NHBE cells infected with SARS-CoV-2. - **Control Condition**: Three biological replicates of Mock-infected NHBE cells, providing a baseline of normal gene expression
+
+# Dataset Retrieval
+
+The study by Blanco-Melo et al. (2020) utilized several model systems to characterize the host response to SARS-CoV-2, including immortalized cell lines, primary cells, and animal models. For this analysis, we focus on the NHBE primary cell dataset.
+
+We begin by loading the necessary R packages. We use GEOquery[@GEOquery] for metadata retrieval, edgeR[@edgeR] for normalization, tidyverse[@tidyverse] for data manipulation, and ComplexHeatmap[@ComplexHeatmap] for visualization.
+
+```{r, message=FALSE, warning=FALSE}
+# required packages
+required_packages <- c("BiocManager", "tidyverse", "knitr", "ComplexHeatmap", "circlize", "readr")
+bioc_packages <- c("GEOquery", "edgeR")
+
+# install missing CRAN packages
+new_cran <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
+if(length(new_cran)) install.packages(new_cran)
+
+# install missing Bioconductor packages
+new_bioc <- bioc_packages[!(bioc_packages %in% installed.packages()[,"Package"])]
+if(length(new_bioc)) BiocManager::install(new_bioc)
+
+# load all libraries
+library(GEOquery)
+library(edgeR)
+library(tidyverse)
+library(knitr)
+library(ComplexHeatmap)
+library(circlize)
+library(readr)
+
+# external plotting functions
+source("plot_functions.R")
+```
+
+The experimental data is archived in the Gene Expression Omnibus (GEO) under accession number `GSE147507`[@BlancoMelo2020]. We first retrieve the project metadata and abstract to confirm the experimental parameters.
+
+```{r, message=FALSE, warning=FALSE}
+gse_id <- "GSE147507"
+
+# create directory to store data
+if (!dir.exists("data")) {
+  dir.create("data", recursive = TRUE)
+}
+
+# retrieve the GSE list
+gse_list <- getGEO(gse_id, GSEMatrix = TRUE, destdir = "data")
+gse <- gse_list[[1]]
+
+# display abstract
+cat(experimentData(gse)@abstract)
+```
+
+The full GEO series contains a diverse range of samples, including those from ferret models and various human cell lines. We specifically target the human raw count matrix to perform our own data cleaning and normalization pipeline from scratch, ensuring rigorous control over the final dataset quality.
+
+```{r, message=FALSE, warning=FALSE}
+target_file <- "GSE147507_RawReadCounts_Human.tsv.gz"
+local_path <- file.path("data", target_file)
+
+# download the human count data if not already available locally
+if (!file.exists(local_path)) {
+  file_info <- getGEOSuppFiles(gse_id, fetch_files = FALSE)
+  human_url <- file_info$url[grep("Human.tsv.gz", file_info$url)]
+  download.file(url = human_url, destfile = local_path, mode = "wb")
+}
+
+# import the raw counts
+x <- read_tsv(local_path, show_col_types = FALSE)
+dim(x)
+```
+
+The initial human dataset contains **21,797 genes** across **78 samples**. As we are specifically interested in the NHBE (Series 1) experimental replicates, the following sections will detail the filtering process used to isolate these six specific samples and remove lowly expressed genes to prepare our dataset for differential expression analysis.
+
+# Dataset Cleaning
+
+To ensure a high-quality analysis, we must first preprocess the raw data retrieved from GEO. This involves mapping samples to human-readable metadata, filtering out "noisy" low-expression genes, and performing data integrity checks.
+
+## Metadata Mapping and Table Cleaning {#metadata-mapping-and-table-cleaning}
+
+The initial dataset contains **78 samples**. To perform a controlled comparison, we filter for the NHBE (Series 1) subset, which consists of three biological replicates of **SARS-CoV-2** infected cells and three **Mock** controls. We map these to descriptors to improve the readability of our downstream analysis.
+
+```{r, message=FALSE, warning=FALSE}
+# retrieve and clean phenotypic data
+metadata_raw <- pData(gse)
+
+cleaned_metadata <- metadata_raw %>%
+  select(title, characteristics_ch1, characteristics_ch1.1) %>%
+  rename(sample = title, cellLine = characteristics_ch1, cellType = characteristics_ch1.1) %>%
+  filter(grepl("Series1_NHBE", sample)) %>%
+  mutate(
+    cellLine = gsub("cell line: ", "", cellLine),
+    sample = gsub("Series1_NHBE_", "", sample),
+    cellType = gsub("cell type: ", "", cellType) 
+  )
+
+kable(cleaned_metadata[, c("sample", "cellLine", "cellType")], 
+      caption = "Table 1: Cleaned Metadata and Condition Mapping for NHBE Series 1")
+```
+
+Next, we isolate the raw read counts for these specific samples. The identifiers are edited to ensure consistent labeling across all tables and figures.
+
+```{r, message=FALSE, warning=FALSE}
+# isolate NHBE Series 1 counts
+x_filtered <- x[, 1:7]
+group_list <- factor(c(rep("Mock", 3), rep("Infected", 3)), levels = c("Mock", "Infected"))
+
+# format matrix
+counts_matrix <- as.matrix(x_filtered[, 2:7])
+rownames(counts_matrix) <- x_filtered[[1]]
+colnames(counts_matrix) <- gsub("Series1_NHBE_", "", colnames(counts_matrix))
+
+kable(head(counts_matrix, 5), caption = "Table 2: NHBE (Series 1) Raw Counts Preview")
+```
+
+## Removing Low Read Counts
+
+With the dataset properly formatted, we next address the distribution of the raw counts. Initial inspection reveals that many genes have very low or zero expression across multiple samples, which can introduce noise and reduce the statistical power of our analysis.
+
+```{r, message=FALSE, warning=FALSE}
+summary_table <- data.frame(do.call(cbind, lapply(as.data.frame(counts_matrix), summary)))
+kable(summary_table, caption = "Table 3: Summary Statistics of Raw Expression Counts (NHBE Series 1)", digits = 2)
+```
+
+As seen in Table 3, the first quantile is zero across all replicates, and mean values are heavily skewed. Since our design includes three replicates per condition, we apply the `filterByExpr` function. Choosing a three-sample threshold allows us to keep potentially important virus-induced genes that are silenced in the mock condition but active across all infected replicates.
+
+```{r, message=FALSE, warning=FALSE}
+# filtering lowly expressed genes
+keep <- filterByExpr(counts_matrix, group = group_list)
+counts_filtered <- counts_matrix[keep, ]
+nrow(counts_filtered)
+```
+
+This process removed 9,758 lowly expressed genes, leaving us with a filtered matrix of 12039 genes.
+
+## Data Integrity and Replicate Validation {#data-integrity-and-replicate-validation}
+
+Before normalization, we perform a series of diagnostic checks. We verify that row identifiers (HGNC symbols) are unique and that the dataset contains no missing (NA) or non-numeric values.
+
+Additionally, we check for duplicate gene expression profiles (rows) or identical sample datasets (columns). While identical counts across thousands of genes are statistically improbable for independent biological replicates, verifying this ensures that no technical redundancies were introduced during data processing.
+
+```{r, message=FALSE, warning=FALSE}
+# check for duplicate genes, missing values (NA) and numeric values only, as well as duplicate genes and samples
+duplicates <- sum(duplicated(rownames(counts_filtered)))
+na_counts  <- sum(is.na(counts_filtered))
+non_numeric_cols <- sum(!sapply(as.data.frame(counts_filtered), is.numeric))
+dup_read_counts <- sum(duplicated(counts_filtered))
+dup_samples <- sum(duplicated(as.list(as.data.frame(counts_filtered))))
+
+# create summary table
+combined_integrity_summary <- data.frame(
+  Metric = c("Duplicate Gene Identifiers", "Missing (NA) Values", "Non-numeric Data Columns",
+             "Duplicate Read Counts (Rows)", "Duplicate Sample Data (Columns)"),
+  Result = c(duplicates, na_counts, non_numeric_cols, dup_read_counts, dup_samples),
+  Status = c(ifelse(duplicates == 0, "Clean", "Action Required"),
+             ifelse(na_counts == 0, "Clean", "Action Required"),
+             ifelse(non_numeric_cols == 0, "Clean", "Action Required"),
+             ifelse(dup_read_counts == 0, "Unique", "Redundancy Detected"),
+             ifelse(dup_samples == 0, "Unique", "Redundancy Detected"))
+)
+
+kable(combined_integrity_summary, caption = "Table 4: Final Data Integrity and Replicate Validation Summary")
+```
+
+The preprocessing results in Table 4 confirm that the dataset is clean and uniquely identified. Our data is now ready for normalization and outlier analysis.
+
+# Normalization
+
+In bulk RNA-Seq analysis, raw gene expression counts are frequently influenced by technical factors unrelated to the biological conditions being studied. Technical factors like differences in sequencing depth, library preparation, and varying RNA compositions can introduce systematic biases that hide the actual biological signal. Normalization is the process of standardizing these technical differences to ensure that the observed variations in gene expression accurately reflect biological variability rather than technical artifacts. For this analysis, we utilize the **edgeR**[@edgeR] package to perform our normalization pipeline.
+
+Before applying any transformations, we inspect the distribution of our preprocessed data to identify baseline technical variation across the NHBE replicates.
+
+```{r pre_norm_boxplot, fig.cap="Figure 1: Distribution of Filtered Raw Read Counts across NHBE (Series 1) Samples. Boxplots represent gene expression for six replicates (n=3 Mock, n=3 SARS-CoV-2 Infected) after removing lowly expressed genes. The y-axis shows raw counts on a log2(counts + 1) scale. Variable medians across samples indicate initial technical differences in sequencing depth.", message=FALSE, warning=FALSE}
+plot_box(counts_filtered, group_list, main = "Pre-normalization NHBE Distribution")
+```
+
+```{r pre_norm_density, fig.cap="Figure 2: Pre-normalization Expression Density Plot. This density estimation plot illustrates the global distribution of filtered raw counts. The lack of overlap between peak distributions highlights systematic technical variation between replicates that requires normalization.", message=FALSE, warning=FALSE}
+plot_density(counts_filtered, group_list, main = "Pre-normalization NHBE Expression Density")
+```
+
+
+## Trimmed Mean of M-values (TMM) Normalization
+
+Next, we handle composition biases, where a few extremely high-expression genes might make other genes look "down-regulated" just by taking up more sequencing space. This is commonly done using the **Trimmed Mean of M-values (TMM)** method. TMM works on the assumption that most genes are not actually changing between our **Mock** and **Infected** groups. It picks a reference sample, trims away the genes with the most extreme changes, and calculates scaling factors based on what's left to balance the libraries.
+
+```{r, message=FALSE, warning=FALSE}
+# create DGEList
+dge <- DGEList(counts = counts_filtered, group = group_list)
+# calculate normalization factors
+dge <- calcNormFactors(dge, method = "TMM")
+# apply normalization
+norm_counts <- cpm(dge, normalized.lib.sizes = TRUE, log = FALSE)
+```
+
+```{r post_norm_boxplot, fig.cap="Figure 3: Distribution of TMM Normalized Expression Values (CPM). These boxplots show the results after TMM normalization standardized the library sizes. Units are log2(Counts Per Million + 1). The aligned medians across Mock (skyblue) and Infected (salmon) replicates demonstrate that technical bias has been mitigated.", message=FALSE, warning=FALSE}
+plot_box(norm_counts, group_list, main = "TMM Normalized NHBE Distribution")
+```
+
+```{r post_norm_density, fig.cap="Figure 4: Post-normalization Expression Density Plot. This plot shows the global gene expression distribution after TMM normalization. The tight overlap of the density curves across all six NHBE replicates confirms that the samples are now statistically comparable for differential expression analysis.", message=FALSE, warning=FALSE}
+plot_density(norm_counts, group_list, main = "TMM Normalized NHBE Expression Density")
+```
+
+After normalization, the data distributions across our six NHBE samples are much more aligned. The means are centered and the density curves overlap more closely, providing a reliable starting point for our differential expression tests.
+
+## Outlier Analysis {#outlier-analysis}
+
+With the data normalized, we can evaluate the presence of outliers that may skew our statistical models. We define outliers using the Interquartile Range (IQR) method, establishing bounds for the lowest 25% and top 75% of our expression data[@Soetewey2020].
+
+```{r, message=FALSE, warning=FALSE}
+# calculate IQR and Bounds for filtered data
+clean_q1 <- apply(counts_filtered, 2, quantile, 0.25)
+clean_q3 <- apply(counts_filtered, 2, quantile, 0.75)
+clean_iqr <- clean_q3 - clean_q1
+
+clean_lower <- clean_q1 - (1.5 * clean_iqr)
+clean_upper <- clean_q3 + (1.5 * clean_iqr)
+
+# calculate IQR and Bounds for normalized data
+norm_q1 <- apply(norm_counts, 2, quantile, 0.25)
+norm_q3 <- apply(norm_counts, 2, quantile, 0.75)
+norm_iqr <- norm_q3 - norm_q1
+
+norm_lower <- norm_q1 - (1.5 * norm_iqr)
+norm_upper <- norm_q3 + (1.5 * norm_iqr)
+
+# create a table of the bounds
+bounds_df <- data.frame(rbind(clean_lower, clean_upper, norm_lower, norm_upper))
+rownames(bounds_df) <- c("Filtered Lower Bound", "Filtered Upper Bound", 
+                         "Normalized Lower Bound", "Normalized Upper Bound")
+
+kable(bounds_df, caption = "Table 4: Outlier Bounds for Filtered and Normalized NHBE Data", digits = 2)
+
+# check if data is within range for filtered data
+clean_in_range <- counts_filtered >= clean_lower & counts_filtered <= clean_upper
+clean_outlier_pct <- (nrow(counts_filtered) - colSums(clean_in_range)) / nrow(counts_filtered)
+
+# check if data is within range for normalized data
+norm_in_range <- norm_counts >= norm_lower & norm_counts <= norm_upper
+norm_outlier_pct <- (nrow(norm_counts) - colSums(norm_in_range)) / nrow(norm_counts)
+
+# create a table of outlier percentages per sample
+outlier_summary <- data.frame(rbind(clean_outlier_pct, norm_outlier_pct))
+rownames(outlier_summary) <- c("Proportion Filtered Outliers", "Proportion Normalized Outlier")
+
+kable(outlier_summary, caption = "Table 5: Proportion of Outliers Detected per Sample", digits = 4)
+```
+
+The results in Table 4 and Table 5 show how much more stable the data became after normalization. Before TMM was applied, the outlier bounds were inconsistent, especially in the infected replicates, suggesting there was some technical variability in the initial sequencing runs.
+
+While \~10% of our genes are classified as outliers, they were not removed because they likely represent the most biologically relevant signals. In a viral infection study, these extreme values often reflect genes that "spike" as part of the host's inflammatory response to SARS-CoV-2. Therefore, our final dataset maintains its full coverage of 12039 unique genes.
+
+# Differential Expression Analysis
+
+Now that we've normalized our data acknowledged any outliers, we will perform differential expression analysis to find genes significantly impacted by SARS-CoV-2 infection.
+
+## Multidimensional Scaling (MDS)
+
+To evaluate how well our replicates group together, we use a Multidimensional Scaling (MDS) plot. This visualization measures the similarities between samples based on their global expression profiles[@Hout2013]. In a successful experiment, replicates of the same condition should cluster closely, while the Mock and Infected groups should be clearly separated.
+
+```{r, message=FALSE, warning=FALSE, fig.cap="Figure 5: Multidimensional Scaling (MDS) Plot of NHBE (Series 1) Samples. This MDS plot visualizes the leading log-fold changes between samples to assess global transcriptional similarities. The Mock (grey) and SARS-CoV-2 Infected (red) replicates show distinct separation along the first dimension (42% of variance), confirming that the viral infection is the primary source of biological variation in the dataset."}
+y <- dge
+group_colors <- c("Mock" = "grey50", "Infected" = "firebrick3")
+sample_colors <- group_colors[y$samples$group]
+
+mds_coords <- plotMDS(y, 
+                      top = 500, 
+                      pch = 16, 
+                      col = sample_colors, 
+                      cex = 1,           # Size of the dots
+                      main = "MDS Plot: NHBE Samples (Series 1)")
+
+# add the color-coded text labels
+text(mds_coords$x, mds_coords$y, 
+     labels = colnames(y), 
+     col = sample_colors, 
+     cex = 0.8,      
+     font = 1,         
+     pos = 3)         
+
+# add legend
+legend("topright", 
+       legend = levels(y$samples$group), 
+       col = group_colors, 
+       pch = 16, 
+       pt.cex = 1.5,
+       bty = "n", 
+       cex = 1)
+```
+
+The MDS plot shows distinct clustering by condition, suggesting that the biological differences between the Mock and Infected groups are the primary drivers of variance in this dataset.
+
+## Variance and Model Fitness
+
+In RNA-Seq datasets, variance typically increases with mean expression, a relationship modeled by the Negative Binomial distribution[@Anders2013]. We calculate dispersion to measure this variability across our replicates. A consistent dispersion suggests that our biological replicates are reliable for downstream analysis.
+
+```{r, message=FALSE, warning=FALSE, fig.cap="Figure 6: Biological Coefficient of Variation (BCV) Plot. The BCV plot illustrates the relationship between gene abundance (Average Log2 CPM) and the variability across biological replicates. The common dispersion (red line) and the trended dispersion (blue line) show a typical decrease in variability as expression levels increase. This confirms that the biological noise in our NHBE triplicates is within acceptable ranges for differential testing."}
+# define the design matrix
+design <- model.matrix(~0 + group_list)
+colnames(design) <- levels(group_list)
+
+# estimate dispersions
+dge_disp <- estimateDisp(dge, design)
+
+plotBCV(dge_disp, 
+        main = "BCV Plot: NHBE Samples", 
+        xlab = "Average Log2 Expression (CPM)", 
+        ylab = "Biological Coefficient of Variation")
+```
+
+We further verify this relationship using a Mean-Variance plot. By checking if our data aligns with the Negative Binomial trend line, we ensure the statistical assumptions of the `edgeR` pipeline are met.
+
+```{r, message=FALSE, warning=FALSE, fig.cap="Figure 7: Mean-Variance Relationship across NHBE Genes. This plot validates the fitness of the Negative Binomial model for the current dataset. The pooled gene-level variance (y-axis) is plotted against mean expression (x-axis), with the blue line representing the Negative Binomial trend. The close alignment of the data points with the trend line confirms that the statistical assumptions required for the edgeR Quasi-Likelihood F-test are satisfied."}
+plotMeanVar(dge_disp, 
+            show.raw.vars = TRUE, 
+            NBline = TRUE, 
+            main = "Mean-Variance Plot: NHBE")
+```
+
+The alignment of our data with the trend line confirms that the Negative Binomial model is appropriate for this dataset.
+
+## Statistical Testing and Multiple Hypothesis Correction
+
+We identify differentially expressed genes (DEGs) using the Quasi-Likelihood (QL) F-test. This method is preferred as it accounts for uncertainty in the dispersion estimates, providing a more robust control of the false positive rate. Because testing thousands of genes simultaneously increases the risk of type I errors, we corrected the p-values using the Benjamini-Hochberg (FDR) method.
+
+```{r, message=FALSE, warning=FALSE}
+# fit the Quasi-Likelihood GLM Model
+fit <- glmQLFit(dge_disp, design)
+contr <- makeContrasts(Infected - Mock, levels = design)
+qlf <- glmQLFTest(fit, contrast = contr)
+
+# identify significant genes using FDR < 0.05 and |log2FC| > 1
+summary_results <- decideTests(qlf, p.value = 0.05, lfc = 1)
+summary_df <- as.data.frame(unclass(summary(summary_results)))
+colnames(summary_df) <- "Gene Count"
+
+kable(summary_df, caption = "Table 5: Summary of Differentially Expressed Genes (FDR < 0.05, |log2FC| > 1)")
+```
+
+We used an FDR < 0.05 and an absolute log2 fold-change > 1 (a 2-fold change). These thresholds ensure the results are statistically rigorous while filtering for changes large enough to be biologically relevant.
+
+## Visualization of Differentially Expressed Genes
+
+### Volcano Plot
+
+The volcano plot visualizes the relationship between the magnitude of **expression change (log2FC)** and its **statistical significance (-log10 P-value)**.
+
+```{r, message=FALSE, warning=FALSE, fig.cap="Figure 8: Volcano Plot of Differentially Expressed Genes (DEGs) in SARS-CoV-2 Infected NHBE Cells. A volcano plot showing the statistical significance (-log10 p-value) against the magnitude of change (log2 Fold-Change). Genes significantly up-regulated (salmon) and down-regulated (light blue) were identified using an FDR < 0.05 and |log2FC| > 1 threshold. The strong asymmetry toward up-regulated genes reflects the robust inflammatory signature characteristic of the host's response to the virus."}
+results_all <- as.data.frame(topTags(qlf, n = Inf)) %>%
+  mutate(sig = case_when(
+    FDR < 0.05 & logFC > 1 ~ "Up-regulated",
+    FDR < 0.05 & logFC < -1 ~ "Down-regulated",
+    TRUE ~ "Not Significant"
+  ))
+
+ggplot(results_all, aes(x = logFC, y = -log10(PValue), color = sig)) +
+  geom_point(alpha = 0.9, size = 1.5) +
+  scale_color_manual(values = c("Up-regulated" = "salmon", 
+                                "Down-regulated" = "skyblue", 
+                                "Not Significant" = "grey70")) +
+  theme_minimal() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "grey40") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey40") +
+  labs(title = "Volcano Plot: SARS-CoV-2 vs Mock",
+       x = "log2 Fold-Change", y = "-log10(p-value)", color = "Status")
+```
+
+### Heatmap of Top Hits
+
+We visualize all the statistically significant differentially expressed genes using a heatmap with row-wise Z-score scaling to highlight expression patterns across samples.
+
+```{r, message=FALSE, warning=FALSE, fig.cap="Figure 9: Hierarchical Clustering Heatmap of all Significant Differentially Expressed Genes. Heatmap displaying row-wise Z-score scaled expression values for the most significant genes across all replicates. Samples are annotated by condition: Mock (grey) and SARS-CoV-2 Infected (red). The dendrogram at the top shows perfect clustering by condition, demonstrating a highly consistent and profound transcriptional impact of the infection on the NHBE primary cell line."}
+top_n <- 109
+top_hits_tbl <- results_all %>% arrange(FDR, PValue) %>% slice_head(n = top_n)
+hm_mat <- norm_counts[rownames(top_hits_tbl), , drop = FALSE]
+hm_z <- t(scale(t(hm_mat)))
+
+ha <- HeatmapAnnotation(Condition = group_list, 
+                        col = list(Condition = c("Mock" = "grey50", "Infected" = "firebrick3")))
+col_fun <- colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+# generate heatmap
+Heatmap(hm_z, name = "Z-score", col = col_fun, top_annotation = ha, 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        cluster_rows = TRUE, cluster_columns = TRUE,
+        column_title = "NHBE Samples", row_title = "Top DE Genes")
+```
+
+The heatmap reveals a very clear separation between the Mock and SARS-CoV-2 Infected samples.
+
+# Discussion {#discussion}
+
+The following contains a guide to the discussion questions for A1. Clicking on the question links back to the section where the analysis was performed, and a brief answer is provided for easy access.
+
+[**Why is the dataset of interest to you?**](#discussion)
+
+My interest in this dataset comes from seeing how differently the **SARS-CoV-2** virus affects individuals. Some experience only mild respiratory symptoms, while others face devastating, life-threatening outcomes. I chose to analyze the `GSE147507`[@BlancoMelo2020] dataset to explore the underlying molecular differences and understand the host transcriptional changes that explain these diverse clinical presentations.
+
+[**What are the control and test conditions of the dataset?**](#introduction)
+
+The test condition for this dataset consists of NHBE cells (Normal Human Bronchial Epithelial) infected with SARS-CoV-2, while the control condition consists of Mock-infected NHBE cells.
+
+[**How many samples in each of the conditions of your dataset?**](#metadata-mapping-and-table-cleaning)
+There are six samples in total for this analysis. This includes three biological replicates for the SARS-CoV-2 infected condition and three biological replicates for the Mock-infected control condition.
+
+[**Were there expression values that were not unique for specific genes? How did you handle these?**](#data-integrity-and-replicate-validation)
+
+There were no duplicate expression profiles (rows) identified for specific genes in the filtered dataset. Every gene retained after filtering showed a unique pattern of read counts across the six samples.
+
+[**Were there expression values that could not be mapped to current HUGO symbols?**](#metadata-mapping-and-table-cleaning)
+
+All gene identifiers in the human raw count matrix provided by the authors were already mapped to HGNC symbols. No additional mapping from Ensembl IDs was required during the preprocessing stage.
+
+[**Were there any outliers in your dataset? How were they handled in the originating paper? How many outliers were removed?**](#outlier-analysis)
+
+Approximately 10% of the genes in each sample were identified as technical outliers based on Interquartile Range (IQR) analysis. The original paper does not explicitly discuss a strategy for outlier removal in the count data. Following the "rigorous" standards of this assignment, I chose not to remove any outliers, as these extreme expression values often represent the most biologically significant "spikes" in the host inflammatory response. Instead, TMM normalization was used to minimize the technical influence of these values on the library scaling.
+
+[**How did you handle replicates?**](#data-integrity-and-replicate-validation)
+
+To handle replicates, I first checked for duplicate column data, confirming that each of the six samples represented a unique biological instance.
+
+[**What is the final coverage of your dataset?**](#removing-low-read-counts)
+
+The final coverage of the preprocessed and normalized dataset is 12,039 unique genes (HGNC symbols) across 6 samples.
+
+# References

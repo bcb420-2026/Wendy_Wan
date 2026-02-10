@@ -1,0 +1,15 @@
+# large data files for a1
+data/
+*.tsv.gz
+*.csv
+*.txt
+
+# tempy files generated during knitting or local sessions
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Rapp.history
+
+.DS_Store
+Thumbs.db
