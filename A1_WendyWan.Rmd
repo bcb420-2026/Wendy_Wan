@@ -13,7 +13,7 @@ output:
     highlight: tango
     fig_caption: true
     code_folding: hide
-bibliography: references.bib
+bibliography: A1_references.bib
 link-citations: true
 ---
 
@@ -33,16 +33,10 @@ We begin by loading the necessary R packages. We use GEOquery[@GEOquery] for met
 
 ```{r, message=FALSE, warning=FALSE}
 # required packages
-required_packages <- c("BiocManager", "tidyverse", "knitr", "ComplexHeatmap", "circlize", "readr")
-bioc_packages <- c("GEOquery", "edgeR")
-
-# install missing CRAN packages
-new_cran <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
-if(length(new_cran)) install.packages(new_cran)
-
-# install missing Bioconductor packages
-new_bioc <- bioc_packages[!(bioc_packages %in% installed.packages()[,"Package"])]
-if(length(new_bioc)) BiocManager::install(new_bioc)
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+if (!requireNamespace("tidyverse", quietly = TRUE))
+  install.packages("tidyverse")
 
 # load all libraries
 library(GEOquery)
