@@ -54,7 +54,7 @@ library(circlize)
 library(readr)
 
 # external plotting functions
-source("plot_functions.R")
+source("A1_plot_functions.R")
 ```
 
 The experimental data is archived in the Gene Expression Omnibus (GEO) under accession number `GSE147507`[@BlancoMelo2020]. We first retrieve the project metadata and abstract to confirm the experimental parameters.
