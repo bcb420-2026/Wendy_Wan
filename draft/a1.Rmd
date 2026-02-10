@@ -1,0 +1,456 @@
+---
+title: "a1"
+output: html_document
+---
+
+```{r, echo=FALSE}
+# Setup
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+if (!require("GEOquery", quietly = TRUE)) 
+  BiocManager::install("GEOquery")
+if(!require(tidyverse)){
+  install.packages("tidyverse",dependencies = FALSE)
+}
+library(GEOquery)
+
+# Define kable_head for professional rendering in the notebook
+kable_head <- function(df, n = 5, caption = "") {
+  knitr::kable(head(df, n), caption = caption)
+}
+
+library(readr)
+library(knitr)
+library(dplyr)
+library(tibble)
+library(tidyverse)
+library(magrittr)
+library(edgeR)
+
+```
+
+# Query data
+```{r}
+gse <- "GSE147507"
+target_file <- "GSE147507_RawReadCounts_Human.tsv.gz"
+local_dir <- "data"
+local_path <- file.path(local_dir, target_file)
+
+if (!dir.exists(local_dir)) {
+  dir.create(local_dir, recursive = TRUE)
+}
+
+# Download only one data file
+if (!file.exists(local_path)) {
+
+  file_info <- getGEOSuppFiles(gse_id, fetch_files = FALSE, baseDir = local_dir)
+  
+  human_url <- file_info$url[grep("Human.tsv.gz", file_info$url)]
+
+  download.file(url = human_url, destfile = local_path, mode = "wb")
+}
+```
+
+# Raw table preview
+```{r}
+library(readr)
+library(knitr)
+library(dplyr)
+library(tibble)
+library(tidyverse)
+library(magrittr)
+library(edgeR)
+
+safe_read <- function(file) {
+  # First attempt: read as TSV
+  df <- tryCatch(
+    readr::read_tsv(file, show_col_types = FALSE),
+    error = function(e) NULL   # catch fatal errors
+  )
+  
+  # If read_tsv failed entirely:
+  if (is.null(df)) {
+    message("TSV read failed — reading as space-delimited file instead.")
+    return(readr::read_table(file, show_col_types = FALSE))
+  }
+  
+  # If read_tsv returned but with parsing issues:
+  probs <- problems(df)
+  if (nrow(probs) > 0) {
+    message("Parsing issues detected in TSV — reading as space-delimited file instead.")
+    return(readr::read_table(file, show_col_types = FALSE))
+  }
+  
+  # If everything was fine:
+  return(df)
+}
+
+x <- safe_read(local_path)
+
+# Clean table
+# This keeps 'gene_id' and the 6 NHBE samples (3 Mock, 3 SARS-CoV-2)
+x_filtered <- x[, 1:7]
+
+sample_names <- colnames(x_filtered)[2:7]
+
+group_list <- factor(c(rep("Mock", 3), rep("Infected", 3)), levels = c("Mock", "Infected"))
+
+kable(head(x_filtered, 5), caption = "NHBE (Series 1) Preview")
+```
+
+# Check for Duplicate Symbols and Non-standard or Missing Symbols
+```{r}
+any(duplicated(rownames(x_filtered))) # FALSE
+na_counts <- sum(is.na(rownames(x_filtered)))
+na_counts # 0
+```
+
+# Clean and Format Table
+```{r}
+# Clean and Format Table
+x_display <- as.data.frame(x_filtered)
+colnames(x_display)[1] <- "gene_id"
+
+# FORMAT TABLE FOR ANALYSIS
+# 1. Create a copy for analysis
+x_analysis <- x_display
+
+# 2. Assign gene_id to row names so the matrix is purely numeric
+rownames(x_analysis) <- x_analysis$gene_id
+
+# 3. Create the matrix using ONLY the count columns (2 through 7)
+counts_matrix <- as.matrix(x_analysis[, 2:7])
+
+# 4. Clean up column names for plots
+colnames(counts_matrix) <- gsub("Series1_NHBE_", "", colnames(counts_matrix))
+```
+
+# Summary Statistics (MAYBE DONT KEEP)
+```{r}
+# 1. Calculate Library Sizes using the cleaned numeric matrix
+# We sum the columns and divide by 1e6 for readability
+lib_sizes <- colSums(counts_matrix) / 1e6
+
+# 2. Calculate Genes Detected (count > 0)
+# This identifies how many of the ~20k genes are actually expressed in each sample
+genes_detected <- colSums(counts_matrix > 0)
+
+# 3. Combine into a summary table for the report
+# We use the cleaned column names (e.g., Mock_1) as the Sample identifier
+qc_summary <- data.frame(
+  Sample = colnames(counts_matrix),
+  Condition = group_list,
+  Lib_Size_Millions = round(lib_sizes, 2),
+  Genes_Detected = genes_detected
+)
+
+# 4. Render the professional table for your notebook
+kable(qc_summary, 
+             caption = "Assessment: Overview Statistics for NHBE Series 1",
+             align = 'c', row.names = FALSE)
+```
+
+# Plot boxplot 
+
+slight variation between conditions and between samples
+```{r}
+plot_box <- function(mat, groups, main = "Distribution of Log2 Counts", ylab = "log2(counts+1)") {
+  
+  df <- as.data.frame(mat) %>%
+    # Create 'gene' column from row names
+    mutate(gene = rownames(mat)) %>% 
+    # Use -gene (the name you just created) to pivot everything else
+    pivot_longer(cols = -gene, names_to = "sample", values_to = "value") %>%
+    mutate(log_value = log2(value + 1))
+  
+  meta_lookup <- data.frame(sample = colnames(mat), Condition = groups)
+  df <- left_join(df, meta_lookup, by = "sample")
+  
+  ggplot(df, aes(x = sample, y = log_value, fill = Condition)) +
+    geom_boxplot(outlier.size = 0.2, alpha = 0.7) +
+    scale_fill_manual(values = c("Mock" = "skyblue", "Infected" = "salmon")) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = main, x = "NHBE Sample", y = ylab)
+}
+
+# IMPORTANT: Use counts_matrix here, NOT x_display
+plot_box(counts_matrix, group_list, main = "Assessment: NHBE (Series 1) Distribution")
+```
+
+# Plot density plot
+```{r}
+plot_density <- function(mat, groups, main = "Expression Density Plot") {
+  
+  df <- as.data.frame(mat) |>
+    mutate(gene = rownames(mat)) |>
+    # pivot everything EXCEPT the gene column
+    pivot_longer(cols = -gene, names_to = "sample", values_to = "value") |>
+    mutate(log_value = log2(value + 1))
+  
+  meta_lookup <- data.frame(sample = colnames(mat), Condition = groups)
+  df <- left_join(df, meta_lookup, by = "sample")
+  
+  ggplot(df, aes(x = log_value, color = sample)) +
+    geom_density(linewidth = 0.8, linetype = "solid") +
+    scale_color_brewer(palette = "Dark2") + 
+    theme_bw() +
+    labs(title = main, x = "log2(counts+1)", y = "Density", color = "Sample") +
+    theme(legend.position = "right", panel.grid.minor = element_blank())
+}
+
+# Run with the numeric counts_matrix
+plot_density(counts_matrix, group_list, main = "Assessment: NHBE (Series 1) Density")
+```
+Upon lookiung at the different distributions, I have determined that no samples hsould be removed, no outliers, because...
+# HERE
+
+# Remove lowly expressed genes
+```{r}
+library(edgeR)
+
+# convert raw counts to CPM
+x_cpm <- cpm(y = counts_matrix[,1:ncol(counts_matrix)])
+plot_box(x_cpm, group_list, main = "Assessment: CPM - All Genes")
+
+# filter out lowly expressed genes
+keep <- filterByExpr(counts_matrix, group = group_list)
+counts_filtered <- counts_matrix[keep, ]
+
+plot_box(counts_filtered, group_list, main = "Assessment: Filtered NHBE Distribution")
+plot_density(counts_filtered, group_list, main = "Assessment: Filtered NHBE Density")
+
+# Initialize DGEList with your 7-column subset
+dge <- DGEList(counts = counts_matrix, group = group_list)
+
+# FILTERING RESULT, THIS MINUS THAT (HOW MANY GENES REMOVED)
+
+```
+Since filtering removed the noise but did not fix the library size differences, TMM normalization is now required.
+
+# TMM Normalization
+```{r}
+dge <- DGEList(counts = counts_filtered, group = group_list)
+dge <- calcNormFactors(dge, method = "TMM")
+norm_cpm_raw <- cpm(dge, normalized.lib.sizes = TRUE, log = FALSE)
+plot_box(norm_cpm_raw, group_list, main = "TMM Normalized (Manual Log)")
+plot_density(norm_cpm_raw, group_list, main = "TMM Normalized (Manual Log)")
+# convert to 
+```
+
+# Look at the distribution of our samples in 2D space
+```{r}
+# 1. Setup data and color vectors
+y <- dge
+group_colors <- c("Mock" = "skyblue", "Infected" = "salmon")
+sample_colors <- group_colors[y$samples$group]
+
+# 2. Create the base MDS plot with points
+# We store the output in 'mds_coords' to get the (x, y) positions
+mds_coords <- plotMDS(y, 
+                      top = 500, 
+                      pch = 16, 
+                      col = sample_colors, 
+                      cex = 1,           # Size of the dots
+                      main = "MDS Plot: NHBE Samples (Series 1)")
+
+# 3. Add the color-coded text labels
+# 'col = sample_colors' ensures the text matches the dot color
+text(mds_coords$x, mds_coords$y, 
+     labels = colnames(y), 
+     col = sample_colors, 
+     cex = 0.8,        # Size of the text
+     font = 1,         # 2 = Bold text for better readability
+     pos = 3)          # Position labels above the points
+
+# 4. Add the legend to match
+legend("topright", 
+       legend = levels(y$samples$group), 
+       col = group_colors, 
+       pch = 16, 
+       pt.cex = 1.5,
+       bty = "n", 
+       cex = 1)
+
+```
+# Check for Non-standard or Missing Symbols
+```{r}
+library(edgeR)
+
+# Define the Design Matrix
+design <- model.matrix(~0 + group_list)
+colnames(design) <- levels(group_list)
+
+# Estimate Dispersions
+# This step accounts for the biological variability between your triplicates
+dge_disp <- estimateDisp(dge, design)
+
+# Fit the Quasi-Likelihood GLM Model
+fit <- glmQLFit(dge_disp, design)
+
+contr <- makeContrasts(Infected - Mock, levels = design)
+
+qlf <- glmQLFTest(fit, contrast = contr)
+
+# 5. View Top Differentially Expressed Genes
+topTags(qlf)
+```
+
+# Plot Biological coefficient of variance plot
+```{r}
+plotBCV(dge_disp)
+```
+# Mean-Variance Plot
+```{r}
+
+library(edgeR)
+
+# 1. Create the Mean-Variance Plot
+# 'show.raw.vars = TRUE' shows the variance of each individual gene
+# 'NBline = TRUE' adds the theoretical Negative Binomial curve in blue
+plotMeanVar(dge_disp, 
+            show.raw.vars = TRUE, 
+            NBline = TRUE, 
+            main = "Mean-Variance Plot: NHBE (Series 1)")
+
+# 2. Add the descriptive caption
+mtext("Mean-Variance plot of NHBE RNASeq data with the Negative Binomial line in Blue.", 
+      side = 1, 
+      line = 4, 
+      cex = 0.75)
+
+```
+The raw gene-level variance (the gray cloud of dots) is tightly clustered around the blue theoretical NB line. This confirms that the statistical model you've chosen is an accurate representation of the physical variability in your NHBE samples.
+
+Overdispersion Verification: Notice that the gray dots sit significantly above the black diagonal line. In RNA-seq, the black line represents a Poisson distribution (where $variance = mean$). The fact that your variance is much higher than the mean—and that it follows the blue curve instead—is the standard "proof" that a Negative Binomial model is required for your analysis.Low Noise: The red "X" marks represent the pooled variance after edgeR has applied its shrinkage/averaging. They are tracking the blue line almost perfectly, which suggests your biological triplicates are highly consistent.
+
+the edgeR QL pipeline was chosen for its strict control of false discovery rates and its robustness in handling small sample sizes. Therefore edge R is used
+
+# Mock vs Infected
+```{r}
+results_all <- topTags(qlf, n = Inf)$table
+
+# 2. Add a significance column
+# We'll use FDR < 0.05 and a logFC threshold of 1 (2-fold change)
+results_all <- results_all %>%
+  mutate(sig = case_when(
+    FDR < 0.05 & logFC > 1 ~ "Up-regulated",
+    FDR < 0.05 & logFC < -1 ~ "Down-regulated",
+    TRUE ~ "Not Significant"
+  ))
+
+# 3. Create the Volcano Plot
+ggplot(results_all, aes(x = logFC, y = -log10(PValue), color = sig)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  scale_color_manual(values = c("Up-regulated" = "salmon", 
+                                "Down-regulated" = "skyblue", 
+                                "Not Significant" = "grey70")) +
+  theme_minimal() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "grey40") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey40") +
+  labs(
+    title = "Volcano Plot: SARS-CoV-2 vs Mock (NHBE Series 1)",
+    subtitle = "Dashed lines: |log2FC| > 1 and p-value < 0.05",
+    x = "log2 fold-change",
+    y = "-log10(p-value)",
+    color = "Status"
+  )
+```
+Plot is heavily skewed to the right, it means the viral infection primarily triggers gene activation.
+
+# Check for Non-standard or Missing Symbols
+```{r}
+# 1. Identify significant genes
+# We use FDR < 0.05 and a logFC threshold of 1 (which is a 2-fold change)
+summary_results <- decideTests(qlf, p.value = 0.05, lfc = 1)
+
+# 2. Create the summary table
+de_summary_table <- summary(summary_results)
+
+# 3. Print the table nicely
+print(de_summary_table)
+
+# Convert to data frame for better formatting
+summary_df <- as.data.frame(unclass(de_summary_table))
+colnames(summary_df) <- "Gene Count"
+
+kable(summary_df, caption = "Summary of Differentially Expressed Genes (FDR < 0.05, |log2FC| > 1)")
+```
+
+# Data Preparation and Annotation Mapping
+```{r}
+library(ComplexHeatmap)
+library(circlize)
+library(RColorBrewer)
+library(dplyr)
+
+# 1. Extract results and handle naming (Fall back to row names if needed)
+# Your results from qlf:
+results_annot <- as.data.frame(topTags(qlf, n = Inf)) %>%
+  mutate(gene_symbol = rownames(.))
+
+# 2. Select Top N Genes
+top_n <- 109
+top_hits_tbl <- results_annot %>%
+  arrange(FDR, PValue) %>%
+  slice_head(n = top_n)
+
+# 3. Subset the normalized data (log-CPM)
+# Use the norm_cpm we calculated earlier (which is already log2-transformed)
+hm_mat <- norm_cpm_raw[rownames(top_hits_tbl), , drop = FALSE]
+
+# Ensure labels are unique for the heatmap rows
+rownames(hm_mat) <- make.unique(rownames(top_hits_tbl))
+
+# 4. Calculate Z-scores (row-wise scaling)
+hm_z <- t(scale(t(hm_mat)))
+```
+
+# Annotation and Color Setup
+```{r}
+# 1. Create a Metadata Data Frame for the Annotation
+# Assuming 'group_list' contains your Mock/Infected labels
+meta_df <- data.frame(
+  Treatment = group_list,
+  row.names = colnames(hm_mat)
+)
+
+# 2. Define Colors
+# Using your established color scheme for consistency
+treat_cols <- c("Mock" = "skyblue", "Infected" = "salmon")
+
+# 3. Create the Heatmap Annotation
+ha <- HeatmapAnnotation(
+  Treatment = meta_df$Treatment,
+  col = list(Treatment = treat_cols),
+  annotation_legend_param = list(
+    Treatment = list(title = "Condition")
+  )
+)
+
+# 4. Define the Heatmap Color Gradient (Blue-White-Red)
+col_fun <- colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+```
+
+# Final Heatmap Generation
+```{r}
+Heatmap(
+  hm_z,
+  name = "z-score",
+  col = col_fun,
+  top_annotation = ha,
+  show_row_names = TRUE,      # Set to TRUE to see your top genes
+  show_column_names = TRUE,
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  row_names_gp = gpar(fontsize = 8),
+  column_names_gp = gpar(fontsize = 10),
+  row_title = paste0("Top ", nrow(hm_z), " Genes (SARS-CoV-2 vs Mock)"),
+  column_title = "NHBE Samples"
+)
+```
+
+# Check for Non-standard or Missing Symbols
+```{r}
+# convert to 
+```
