@@ -2388,10 +2388,6 @@ upregulated genes versus 0 for downregulated genes (at <span class="math inline"
 narrative that the acute phase of infection is characterised by a
 massive, coordinated induction of host genes involved in inflammatory
 recruitment.</p>
-</div>
-<div id="good-title-to-show-a-little-bit-of-a-misalignment-with-original-paper" class="section level3" number="2.4.2">
-<h3><span class="header-section-number">2.4.2</span> Good title to show
-a little bit of a misalignment with original paper</h3>
 <p>While we see enrichment in “Interferon alpha/beta signaling,”
 Blanco-Melo et al. noted that this response is uniquely “low” relative
 to the high viral load when compared to other respiratory viruses like
@@ -2401,12 +2397,11 @@ confirms the virus does trigger these signatures, but the original paper
 clarifies that this response is insufficient to halt viral
 replication.</p>
 </div>
-<div id="supporting-evidence-from-literature" class="section level3" number="2.4.3">
-<h3><span class="header-section-number">2.4.3</span> Supporting Evidence
+<div id="supporting-evidence-from-literature" class="section level3" number="2.4.2">
+<h3><span class="header-section-number">2.4.2</span> Supporting Evidence
 from Literature</h3>
-<div id="nf-kappab-signaling-and-viral-persistence" class="section level4" number="2.4.3.1">
-<h4><span class="header-section-number">2.4.3.1</span> NF-<span class="math inline">\(\kappa\)</span>B Signaling and Viral
-Persistence</h4>
+<p><strong>NF-<span class="math inline">\(\kappa\)</span>B Signaling and
+Viral Persistence</strong></p>
 <p>The identification of “Photodynamic therapy induced NF kB survival
 signaling” (<span class="math inline">\(P = 4.460 \times
 10^{-12}\)</span>) as a significant pathway aligns with broader research
@@ -2417,10 +2412,7 @@ pro-inflammatory environment. Chronic NF-<span class="math inline">\(\kappa\)</s
 the severe lung inflammation seen in COVID-19 patients, as it
 coordinates the expression of multiple cytokines and chemokines that
 lead to tissue damage<span class="citation">(<a href="#ref-Li2021"><span class="nocase">Li et al.</span> 2021</a>)</span>.</p>
-</div>
-<div id="bacteriallps-like-responses-and-tlr-activation" class="section level4" number="2.4.3.2">
-<h4><span class="header-section-number">2.4.3.2</span>
-Bacterial/LPS-like Responses and TLR Activation</h4>
+<p><strong>Bacterial/LPS-like Responses and TLR Activation</strong></p>
 <p>The presence of terms like “response to lipopolysaccharide” (<span class="math inline">\(P = 2.359 \times 10^{-16}\)</span>) and “response
 to molecule of bacterial origin” (<span class="math inline">\(P = 9.877
 \times 10^{-16}\)</span>) suggests a significant overlap in innate
@@ -2432,7 +2424,6 @@ The activation of these TLRs triggers a downstream signaling cascade
 involving MyD88<span class="citation">(<a href="#ref-Zhu2023"><span class="nocase">Zhu et al.</span> 2023</a>)</span>, which converges on
 the same inflammatory pathways—such as NF-<span class="math inline">\(\kappa\)</span>B—that are activated by bacterial
 lipopolysaccharides.</p>
-</div>
 </div>
 </div>
 </div>
@@ -2518,7 +2509,7 @@ tool.</p>
 <span id="cb14-10"><a href="#cb14-10" tabindex="-1"></a><span class="co"># save .rnk file</span></span>
 <span id="cb14-11"><a href="#cb14-11" tabindex="-1"></a>rnk_file_path <span class="ot">&lt;-</span> <span class="fu">file.path</span>(data_dir, <span class="st">&quot;NHBE_SARSCoV2_ranks.rnk&quot;</span>)</span>
 <span id="cb14-12"><a href="#cb14-12" tabindex="-1"></a></span>
-<span id="cb14-13"><a href="#cb14-13" tabindex="-1"></a><span class="fu">write.table</span>(ranked_genes, <span class="at">file =</span> params<span class="sc">$</span>rnk_file, </span>
+<span id="cb14-13"><a href="#cb14-13" tabindex="-1"></a><span class="fu">write.table</span>(ranked_genes, rnk_file_path, </span>
 <span id="cb14-14"><a href="#cb14-14" tabindex="-1"></a>            <span class="at">sep =</span> <span class="st">&quot;</span><span class="sc">\t</span><span class="st">&quot;</span>, <span class="at">row.names =</span> <span class="cn">FALSE</span>, <span class="at">col.names =</span> <span class="cn">FALSE</span>, <span class="at">quote =</span> <span class="cn">FALSE</span>)</span></code></pre></div>
 </div>
 <div id="run-gsea-command" class="section level3" number="3.2.3">
@@ -2763,7 +2754,7 @@ thresholds?</strong></a></p>
 (<span class="math inline">\(n=88\)</span>), while 0 pathways met the
 <span class="math inline">\(FDR &lt; 0.05\)</span> threshold for the
 downregulated genes (<span class="math inline">\(n=21\)</span>).</p>
-<p><a href="#separate-queries"><strong>separate vs. combined analysis of
+<p><a href="#separate-queries"><strong>Separate vs. combined analysis of
 up-regulated set and down-regulated set of genes</strong></a></p>
 <p>Separate queries were required to prevent the dominant upregulated
 inflammatory signals from masking the presence of the smaller
